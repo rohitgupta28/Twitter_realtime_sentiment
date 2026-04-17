@@ -14,13 +14,13 @@ A real-time Twitter/X sentiment analysis system that processes tweets using **Ro
 
 > Live sentiment analysis dashboard showing real-time tweet feed, sentiment distribution, trending hashtags, and time-series charts.
 
-📊 **[View Interactive Dashboard Preview →](assets/realtime_sentiment_dashboard.html)**
+📊 **[View Interactive Dashboard Preview →](realtime_sentiment_dashboard.html)**
 
 ---
 
 ## 🏗️ System Architecture
 
-![Realtime Sentiment Pipeline](assets/realtime_sentiment_pipeline.svg)
+![Realtime Sentiment Pipeline](realtime_sentiment_pipeline.svg)
 
 ---
 
