@@ -153,6 +153,17 @@ python ingest.py --csv training.1600000.processed.noemoticon.csv --limit 10000
 python ingest.py --csv training.1600000.processed.noemoticon.csv --limit 50000 --no-nlp
 ```
 
+You can also replay a Xquik tweet CSV export into the same MongoDB and dashboard
+pipeline:
+
+```bash
+python ingest.py --csv xquik-tweets.csv --format xquik --limit 5000
+```
+
+The Xquik loader accepts common export columns such as `text`, `tweet_text`,
+`full_text`, `created_at`, `timestamp`, `username`, `author_id`, `id`, and
+`tweet_id`. Rows without usable tweet text are skipped before MongoDB inserts.
+
 ---
 
 ## 🐦 Live Twitter Streaming (Optional)
