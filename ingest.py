@@ -95,6 +95,15 @@ def map_target_to_label(target: Any) -> str:
     4 → Positive
     2 → Neutral  (rare in Sentiment140 but handle it)
     """
+    if isinstance(target, str):
+        normalized = target.strip().lower()
+        if normalized in {"negative", "neg"}:
+            return "Negative"
+        if normalized in {"positive", "pos"}:
+            return "Positive"
+        if normalized in {"neutral", "neu"}:
+            return "Neutral"
+
     try:
         t = int(target)
         if t == 0:
@@ -158,18 +167,61 @@ def load_sentiment140(csv_path: str, limit: Optional[int] = None) -> pd.DataFram
     return df.reset_index(drop=True)
 
 
+def pick(row: pd.Series, *names: str, default: str = "") -> str:
+    """Return the first non-empty value from a row."""
+    for name in names:
+        value = row.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
+
+
+def load_xquik_csv(csv_path: str, limit: Optional[int] = None) -> pd.DataFrame:
+    """Load a Xquik CSV export and normalize its common tweet columns."""
+    logger.info(f"📂 Loading Xquik CSV export: {csv_path}")
+    df = pd.read_csv(csv_path, low_memory=False)
+
+    records: List[Dict[str, Any]] = []
+    for index, row in df.iterrows():
+        text = pick(row, "text", "tweet_text", "full_text", "content")
+        if len(text) <= 5:
+            continue
+
+        records.append({
+            "tweet_id": pick(row, "id", "tweet_id", "tweetId", default=f"xquik_{index}"),
+            "date_str": pick(row, "created_at", "timestamp", "createdAt"),
+            "user": pick(row, "username", "author_username", "author_id", "user_id"),
+            "text": text,
+            "target": pick(row, "sentiment", "label", default="Neutral"),
+        })
+        if limit is not None and len(records) >= limit:
+            break
+
+    logger.info(f"   Normalized Xquik rows: {len(records):,}")
+    return pd.DataFrame(records)
+
+
 # ── Batch Builder ──────────────────────────────────────────
-def build_tweet_doc(row: pd.Series, index: int) -> Dict[str, Any]:
+def build_tweet_doc(row: pd.Series, index: int, source: str) -> Dict[str, Any]:
     """
-    Convert one Sentiment140 CSV row into our MongoDB document format.
+    Convert one CSV row into our MongoDB document format.
     """
+    date_value = row.get("date_str", "")
+    created_at = parse_s140_date(date_value) if source == "sentiment140" else pd.to_datetime(
+        date_value, errors="coerce", utc=True
+    )
+    if pd.isna(created_at):
+        created_at = datetime.utcnow()
+    elif hasattr(created_at, "to_pydatetime"):
+        created_at = created_at.to_pydatetime()
+
     return {
         "tweet_id":         str(row.get("tweet_id", f"s140_{index}")),
         "text":             str(row["text"]),
         "user":             str(row.get("user", "")),
-        "created_at":       parse_s140_date(row.get("date_str", "")),
+        "created_at":       created_at,
         "ingested_at":      datetime.utcnow(),
-        "source":           "sentiment140",
+        "source":           source,
         "ground_truth":     map_target_to_label(row.get("target")),
         "matched_keywords": [],
         "processed":        False,
@@ -184,6 +236,7 @@ def ingest_csv(
     limit: Optional[int] = None,
     run_nlp: bool = True,
     batch_size: int = 500,
+    source_format: str = "sentiment140",
 ):
     """
     Full pipeline: Sentiment140 CSV → MongoDB + NLP.
@@ -196,7 +249,12 @@ def ingest_csv(
     """
     # ── Setup ──────────────────────────────────────────────
     ensure_indexes()
-    df = load_sentiment140(csv_path, limit=limit)
+    if source_format == "xquik":
+        df = load_xquik_csv(csv_path, limit=limit)
+        source_name = "xquik"
+    else:
+        df = load_sentiment140(csv_path, limit=limit)
+        source_name = "sentiment140"
     total = len(df)
 
     inserted   = 0
@@ -234,7 +292,7 @@ def ingest_csv(
     # ── Main loop ──────────────────────────────────────────
     for i, (_, row) in enumerate(df.iterrows()):
         try:
-            doc = build_tweet_doc(row, i)
+            doc = build_tweet_doc(row, i, source_name)
             batch_docs.append(doc)
 
             # Flush to MongoDB every batch_size rows
@@ -268,7 +326,7 @@ def ingest_csv(
 
         # Fetch all unprocessed docs we just inserted
         cursor = collection.find(
-            {"processed": False, "source": "sentiment140"},
+            {"processed": False, "source": source_name},
             {"_id": 1, "text": 1}
         ).batch_size(200)
 
@@ -320,7 +378,7 @@ def ingest_csv(
 # ── CLI Entry Point ────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Ingest Sentiment140 dataset into MongoDB",
+        description="Ingest Sentiment140 or Xquik tweet CSV data into MongoDB",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -332,12 +390,21 @@ Examples:
 
   # Fast raw insert, no NLP (useful to pre-load data)
   python ingest.py --csv training.1600000.processed.noemoticon.csv --limit 50000 --no-nlp
+
+  # Xquik export replay into the same MongoDB dashboard pipeline
+  python ingest.py --csv xquik-tweets.csv --format xquik --limit 5000
         """
     )
     parser.add_argument(
         "--csv",
         required=True,
-        help="Path to training.1600000.processed.noemoticon.csv"
+        help="Path to training.1600000.processed.noemoticon.csv or a Xquik export"
+    )
+    parser.add_argument(
+        "--format",
+        choices=["sentiment140", "xquik"],
+        default="sentiment140",
+        help="CSV format to ingest (default: sentiment140)"
     )
     parser.add_argument(
         "--limit",
@@ -364,4 +431,5 @@ Examples:
         limit=args.limit,
         run_nlp=not args.no_nlp,
         batch_size=args.batch_size,
+        source_format=args.format,
     )
